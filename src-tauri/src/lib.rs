@@ -2,7 +2,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 static LAST_TOGGLE: AtomicU64 = AtomicU64::new(0);
 
@@ -309,12 +309,13 @@ fn toggle_overlay(app: &tauri::AppHandle) {
     LAST_TOGGLE.store(now, Ordering::Relaxed);
 
     let app = app.clone();
+    let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
-        let visible = app
+        let visible = handle
             .get_webview_window("overlay")
             .and_then(|win| win.is_visible().ok())
             .unwrap_or(false);
-        set_overlay(&app, !visible);
+        set_overlay(&handle, !visible);
     });
 }
 
