@@ -1,8 +1,10 @@
 import "./App.css";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Routes, Route, useNavigate } from "react-router-dom";
-// import { Page } from "./pages/Page";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { SideMenu } from "./components/SideMenu";
+import { Overlay } from "./components/Overlay";
 import { setInputMode, useInputMode, getPad } from "./input-mode";
 import { Games } from "./pages/Games";
 import { Apps } from "./pages/Apps";
@@ -11,6 +13,14 @@ import { getDeadzone, applyWindowMode, getWindowMode } from "./settings";
 import { useSystemSounds } from "./sound";
 
 const TILES = ["Games", "Apps", "Settings"];
+
+function isOverlayWindow() {
+  try {
+    return getCurrentWindow().label === "overlay";
+  } catch {
+    return false;
+  }
+}
 
 function useCursorMode() {
   useEffect(() => {
@@ -55,7 +65,7 @@ function useCursorMode() {
         const pressed = pad.buttons.some((b) => b.pressed);
         const now = `${stick}:${pressed}`;
         if (now !== prev && (stick || pressed)) {
-          setInputMode("gamepad", pad.id); // CHANGE
+          setInputMode("gamepad", pad.id);
           hide();
         }
         prev = now;
@@ -75,6 +85,20 @@ function useCursorMode() {
   }, []);
 }
 
+function ShellNav() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<string>("shell-navigate", (event) => {
+      navigate(event.payload || "/");
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, [navigate]);
+  return null;
+}
+
 function Home() {
   const [focused, setFocused] = useState(0);
   const focusedRef = useRef(focused);
@@ -91,7 +115,7 @@ function Home() {
       : mode === "gamepad" && padKind === "playstation"
         ? "OPTIONS"
         : mode === "gamepad"
-          ? "☰"
+          ? "\u2630"
           : "";
 
   const open = () => navigate("/" + TILES[focusedRef.current].toLowerCase());
@@ -230,18 +254,26 @@ function Home() {
   );
 }
 
-export default function App() {
+function Shell() {
   useCursorMode();
   useSystemSounds();
   useEffect(() => {
     void applyWindowMode(getWindowMode());
   }, []);
   return (
-    <Routes>
-      <Route path="/" element={<Home />} />
-      <Route path="/games" element={<Games />} />
-      <Route path="/apps" element={<Apps />} />
-      <Route path="/settings" element={<Settings />} />
-    </Routes>
+    <>
+      <ShellNav />
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/games" element={<Games />} />
+        <Route path="/apps" element={<Apps />} />
+        <Route path="/settings" element={<Settings />} />
+      </Routes>
+    </>
   );
+}
+
+export default function App() {
+  if (isOverlayWindow()) return <Overlay />;
+  return <Shell />;
 }

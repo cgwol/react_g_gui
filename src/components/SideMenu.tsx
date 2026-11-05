@@ -12,9 +12,11 @@ const POWER = ["Minimize", "Close app", "Sleep", "Power off"] as const;
 export function SideMenu({
   open,
   onClose,
+  overlay = false,
 }: {
   open: boolean;
   onClose: () => void;
+  overlay?: boolean;
 }) {
   const navigate = useNavigate();
   const [focused, setFocused] = useState(0);
@@ -30,24 +32,53 @@ export function SideMenu({
       : mode === "gamepad" && padKind === "playstation"
         ? "OPTIONS"
         : mode === "gamepad"
-          ? "☰"
+          ? "\u2630"
           : "";
 
   const items = powerOpen ? POWER : ITEMS;
 
   const choose = async (label: string) => {
-    if (label === "Home") navigate("/");
-    if (label === "Settings") navigate("/settings");
     if (label === "Close") {
       setPowerOpen(true);
       setFocused(0);
       return;
     }
+    if (label === "Sleep") {
+      await invoke("system_action", { action: "sleep" });
+      onClose();
+      return;
+    }
+    if (label === "Power off") {
+      await invoke("system_action", { action: "shutdown" });
+      onClose();
+      return;
+    }
+
+    if (overlay) {
+      if (label === "Home") {
+        await invoke("open_shell", { route: "/" });
+        return;
+      }
+      if (label === "Settings") {
+        await invoke("open_shell", { route: "/settings" });
+        return;
+      }
+      if (label === "Minimize") {
+        await invoke("minimize_shell");
+        onClose();
+        return;
+      }
+      if (label === "Close app") {
+        await invoke("quit_app");
+        return;
+      }
+      return;
+    }
+
+    if (label === "Home") navigate("/");
+    if (label === "Settings") navigate("/settings");
     if (label === "Minimize") await getCurrentWindow().minimize();
     if (label === "Close app") await getCurrentWindow().close();
-    if (label === "Sleep") await invoke("system_action", { action: "sleep" });
-    if (label === "Power off")
-      await invoke("system_action", { action: "shutdown" });
     onClose();
   };
 
@@ -56,7 +87,7 @@ export function SideMenu({
       setPowerOpen(false);
       return;
     }
-    play("menu")
+    play("menu");
     setFocused(0);
 
     const onKey = (e: KeyboardEvent) => {
@@ -144,7 +175,7 @@ export function SideMenu({
       cancelAnimationFrame(raf);
       window.removeEventListener("keydown", onKey);
     };
-  }, [open, navigate, onClose]);
+  }, [open, navigate, onClose, overlay]);
 
   if (!open) return null;
 

@@ -1,5 +1,10 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use tauri::Manager;
+
+static LAST_TOGGLE: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -247,6 +252,151 @@ fn clear_tiles(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn place_overlay(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
+    let cursor = app.cursor_position().ok();
+    let monitors = app.available_monitors().unwrap_or_default();
+    let monitor = monitors.iter().find(|monitor| {
+        let Some(cursor) = cursor else {
+            return false;
+        };
+        let pos = monitor.position();
+        let size = monitor.size();
+        let x = cursor.x as i32;
+        let y = cursor.y as i32;
+        x >= pos.x
+            && y >= pos.y
+            && x < pos.x + size.width as i32
+            && y < pos.y + size.height as i32
+    });
+    let monitor = monitor.or_else(|| monitors.first());
+    if let Some(monitor) = monitor {
+        let pos = monitor.position();
+        let size = monitor.size();
+        let _ = win.set_position(tauri::PhysicalPosition::new(pos.x, pos.y));
+        let _ = win.set_size(tauri::PhysicalSize::new(size.width, size.height));
+    }
+}
+
+fn set_overlay(app: &tauri::AppHandle, show: bool) {
+    let Some(win) = app.get_webview_window("overlay") else {
+        return;
+    };
+    if show {
+        place_overlay(app, &win);
+        let _ = win.set_always_on_top(true);
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = win.emit("overlay-open", ());
+    } else {
+        let _ = win.hide();
+        let _ = win.emit("overlay-close", ());
+    }
+}
+
+fn toggle_overlay(app: &tauri::AppHandle) {
+    let now = now_ms();
+    let prev = LAST_TOGGLE.load(Ordering::Relaxed);
+    if now.saturating_sub(prev) < 350 {
+        return;
+    }
+    LAST_TOGGLE.store(now, Ordering::Relaxed);
+
+    let app = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let visible = app
+            .get_webview_window("overlay")
+            .and_then(|win| win.is_visible().ok())
+            .unwrap_or(false);
+        set_overlay(&app, !visible);
+    });
+}
+
+fn create_overlay(app: &tauri::AppHandle) -> Result<(), String> {
+    if app.get_webview_window("overlay").is_some() {
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(app, "overlay", tauri::WebviewUrl::App("index.html".into()))
+        .title("Menu")
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .focused(false)
+        .shadow(false)
+        .resizable(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn guide_down(gilrs: &gilrs::Gilrs) -> bool {
+    use gilrs::Button;
+    gilrs.gamepads().any(|(_, pad)| {
+        if !pad.is_connected() {
+            return false;
+        }
+        let mode = pad.button_code(Button::Mode).is_some() && pad.is_pressed(Button::Mode);
+        let chord = pad.is_pressed(Button::Select) && pad.is_pressed(Button::Start);
+        mode || chord
+    })
+}
+
+fn spawn_guide_watcher(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut gilrs = match gilrs::Gilrs::new() {
+            Ok(gilrs) => gilrs,
+            Err(_) => return,
+        };
+        let mut prev = false;
+        loop {
+            while gilrs.next_event().is_some() {}
+            let down = guide_down(&gilrs);
+            if down && !prev {
+                toggle_overlay(&app);
+            }
+            prev = down;
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+    });
+}
+
+#[tauri::command]
+fn hide_overlay(app: tauri::AppHandle) {
+    set_overlay(&app, false);
+}
+
+#[tauri::command]
+fn open_shell(app: tauri::AppHandle, route: String) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+        let _ = main.emit("shell-navigate", route);
+    }
+    set_overlay(&app, false);
+}
+
+#[tauri::command]
+fn minimize_shell(app: tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.minimize();
+    }
+    set_overlay(&app, false);
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -256,19 +406,44 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .setup(|app| {
+            if let Err(err) = create_overlay(app.handle()) {
+                eprintln!("overlay window: {err}");
+            }
+
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_global_shortcut::ShortcutState;
+                app.handle().plugin(
+                    tauri_plugin_global_shortcut::Builder::new()
+                        .with_shortcuts(["ctrl+alt+g"])?
+                        .with_handler(|app, _shortcut, event| {
+                            if event.state == ShortcutState::Pressed {
+                                toggle_overlay(app);
+                            }
+                        })
+                        .build(),
+                )?;
+                spawn_guide_watcher(app.handle().clone());
+            }
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-                    greet,
-                    system_action,
-                    launch_path,
-                    list_steam_games,
-                    launch_steam,
-                    save_tile_image,
-                    save_data_url,
-                    delete_tile_image,
-                    save_data_url,
-                    delete_tile_image,
-                    clear_tiles
-                ])
+            greet,
+            system_action,
+            launch_path,
+            list_steam_games,
+            launch_steam,
+            save_tile_image,
+            save_data_url,
+            delete_tile_image,
+            clear_tiles,
+            hide_overlay,
+            open_shell,
+            minimize_shell,
+            quit_app
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
