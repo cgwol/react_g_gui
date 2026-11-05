@@ -31,6 +31,14 @@ let volume: Volume = loadVolume();
 let windowMode: WindowMode = loadWindow();
 let resolution: Resolution = loadResolution();
 
+function isOverlayWindow() {
+  try {
+    return getCurrentWindow().label === "overlay";
+  } catch {
+    return false;
+  }
+}
+
 function load(): Sensitivity {
   const saved = localStorage.getItem(KEY);
   return saved === "Low" || saved === "High" ? saved : "Medium";
@@ -52,6 +60,7 @@ function emit() {
 
 function applyTheme() {
   document.documentElement.className = `theme-${theme.toLowerCase()}`;
+  if (isOverlayWindow()) document.documentElement.classList.add("overlay");
 }
 
 function wait(ms: number) {
@@ -235,6 +244,7 @@ async function placeSized(decorated: boolean) {
 }
 
 export async function applyWindowMode(mode: WindowMode) {
+  if (isOverlayWindow()) return;
   const win = getCurrentWindow();
 
   if (mode === "Fullscreen") {
@@ -281,14 +291,16 @@ export function useWindowMode() {
 
 applyTheme();
 
-getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-  if (getWindowMode() !== "Windowed fullscreen") return;
-  if (!focused) {
-    void getCurrentWindow().setAlwaysOnTop(false);
-    return;
-  }
-  void (async () => {
-    const monitor = await currentMonitor();
-    if (targetSize(monitor).fills) await coverMonitor();
-  })();
-});
+if (!isOverlayWindow()) {
+  getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+    if (getWindowMode() !== "Windowed fullscreen") return;
+    if (!focused) {
+      void getCurrentWindow().setAlwaysOnTop(false);
+      return;
+    }
+    void (async () => {
+      const monitor = await currentMonitor();
+      if (targetSize(monitor).fills) await coverMonitor();
+    })();
+  });
+}
