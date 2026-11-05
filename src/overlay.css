@@ -1,0 +1,10 @@
+html.overlay,
+html.overlay body,
+html.overlay #root {
+  background: transparent !important;
+  height: 100%;
+}
+
+html.overlay .menu-backdrop {
+  background: rgba(0, 0, 0, 0.28);
+}
